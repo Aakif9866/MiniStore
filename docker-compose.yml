@@ -1,5 +1,5 @@
 # MiniStore — local development stack
-# Phase 1: MinIO only. Postgres and the backend are added in Phase 2.
+# MinIO (objects) + PostgreSQL (metadata). The backend runs on the host in dev: cd backend && npm run dev
 #
 # Image note: MinIO stopped publishing community images (Docker Hub repos deleted Sep 2026).
 # We use Chainguard's free rebuild from MinIO source, pinned by digest so every `up` runs
@@ -10,6 +10,25 @@ name: ministore
 x-minio-image: &minio-image cgr.dev/chainguard/minio@sha256:bd014394a80898e68c149f2311fdf8d5a2c2f3bb2c33b9327ae6d02b4b065ae1
 
 services:
+  postgres:
+    image: postgres:18-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in .env}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      # Postgres 18 images keep data in /var/lib/postgresql/18/docker, so mount the parent.
+      - postgres-data:/var/lib/postgresql
+      # Runs once, on an empty volume only: creates the separate database used by tests.
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   minio:
     image: *minio-image
     command: ["server", "/data", "--console-address", ":9001"]
@@ -66,3 +85,4 @@ services:
 
 volumes:
   minio-data:
+  postgres-data:

@@ -1,0 +1,16 @@
+{
+  // Type-checks everything (src + tests). `npm run build` uses tsconfig.build.json instead.
+  "compilerOptions": {
+    "target": "es2023",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "strict": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    // Prisma 7's generated client imports "./x.ts"; rewrite those to "./x.js" when compiling.
+    "rewriteRelativeImportExtensions": true,
+    "types": ["node", "jest"],
+    "noEmit": true
+  },
+  "include": ["src", "tests"]
+}

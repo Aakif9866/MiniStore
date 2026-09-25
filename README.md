@@ -14,8 +14,9 @@ Jest/Supertest · k6 · Prometheus + Grafana · GitHub Actions
 |---|---|---|
 | 0 | [Overview & architecture](docs/00-overview.md) | ✅ done |
 | 1 | [Object storage + MinIO in Docker](docs/01-object-storage.md) | ✅ done |
-| 2 | Backend integration (Express + Postgres + MinIO) | next |
-| 3–15 | See the [roadmap](docs/00-overview.md#7-roadmap--what-you-should-be-able-to-explain-after-each-phase) | — |
+| 2 | [Backend integration (Express + Postgres + MinIO)](docs/02-backend.md) | ✅ done |
+| 3 | Secure file uploads | next |
+| 4–15 | See the [roadmap](docs/00-overview.md#7-roadmap--what-you-should-be-able-to-explain-after-each-phase) | — |
 
 ## How the docs work
 
@@ -27,11 +28,15 @@ Each phase has one file in [`docs/`](docs/) with two sections:
 
 ```bash
 cp .env.example .env        # replace both passwords:  openssl rand -hex 20
-docker compose up -d
+docker compose up -d                          # MinIO + Postgres
+cd backend && npm install && npm run db:migrate
+npm run dev                                   # API on http://127.0.0.1:3000
+npm test                                      # unit + integration tests
 ```
 
 | Service | URL |
 |---|---|
 | MinIO S3 API | http://127.0.0.1:9100 |
 | MinIO Console | http://127.0.0.1:9101 (root user/password from `.env`) |
+| PostgreSQL | `127.0.0.1:5433` (user/password from `.env`) |
 | `mc` CLI | `docker compose run --rm mc ls local` |
