@@ -13,11 +13,25 @@ Jest/Supertest · k6 · Prometheus + Grafana · GitHub Actions
 | Phase | Topic | Status |
 |---|---|---|
 | 0 | [Overview & architecture](docs/00-overview.md) | ✅ done |
-| 1 | Object storage + MinIO in Docker | next |
-| 2–15 | See the [roadmap](docs/00-overview.md#7-roadmap--what-you-should-be-able-to-explain-after-each-phase) | — |
+| 1 | [Object storage + MinIO in Docker](docs/01-object-storage.md) | ✅ done |
+| 2 | Backend integration (Express + Postgres + MinIO) | next |
+| 3–15 | See the [roadmap](docs/00-overview.md#7-roadmap--what-you-should-be-able-to-explain-after-each-phase) | — |
 
 ## How the docs work
 
 Each phase has one file in [`docs/`](docs/) with two sections:
 - **Before** — what we're building and why (read before coding)
 - **After** — what was built, what we learned, what's still open
+
+## Quick start
+
+```bash
+cp .env.example .env        # replace both passwords:  openssl rand -hex 20
+docker compose up -d
+```
+
+| Service | URL |
+|---|---|
+| MinIO S3 API | http://127.0.0.1:9100 |
+| MinIO Console | http://127.0.0.1:9101 (root user/password from `.env`) |
+| `mc` CLI | `docker compose run --rm mc ls local` |

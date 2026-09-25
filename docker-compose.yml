@@ -1,0 +1,68 @@
+# MiniStore — local development stack
+# Phase 1: MinIO only. Postgres and the backend are added in Phase 2.
+#
+# Image note: MinIO stopped publishing community images (Docker Hub repos deleted Sep 2026).
+# We use Chainguard's free rebuild from MinIO source, pinned by digest so every `up` runs
+# the exact same bytes. See docs/01-object-storage.md → "Why this image".
+
+name: ministore
+
+x-minio-image: &minio-image cgr.dev/chainguard/minio@sha256:bd014394a80898e68c149f2311fdf8d5a2c2f3bb2c33b9327ae6d02b4b065ae1
+
+services:
+  minio:
+    image: *minio-image
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set MINIO_ROOT_USER in .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:${MINIO_API_PORT:-9100}:9000"     # S3 API  (what code and mc talk to)
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9101}:9001" # Console (web UI for humans)
+    volumes:
+      - minio-data:/data # objects survive `docker compose down`
+    healthcheck:
+      # Unauthenticated liveness endpoint. The image has no curl/grep, so use bash's /dev/tcp
+      # to send a raw HTTP request and check the status line for 200.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /minio/health/live HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && read -r l <&3 && [[ $$l == *' 200 '* ]]"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # One-shot job: create the bucket and the least-privilege app user, then exit.
+  # Safe to re-run — every step is idempotent.
+  minio-init:
+    image: *minio-image
+    entrypoint: ["sh", "/scripts/init.sh"]
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET:?set MINIO_BUCKET in .env}
+      MINIO_APP_ACCESS_KEY: ${MINIO_APP_ACCESS_KEY:?set MINIO_APP_ACCESS_KEY in .env}
+      MINIO_APP_SECRET_KEY: ${MINIO_APP_SECRET_KEY:?set MINIO_APP_SECRET_KEY in .env}
+      MC_CONFIG_DIR: /tmp/.mc
+    volumes:
+      - ./infra/minio/init.sh:/scripts/init.sh:ro
+    restart: "no"
+
+  # Interactive mc CLI — not started by `up`. Usage: docker compose run --rm mc ls local
+  # Two aliases are preconfigured:
+  #   local → root/admin credentials (can do anything)
+  #   app   → the backend's restricted credentials (only its bucket)
+  mc:
+    image: *minio-image
+    profiles: ["tools"]
+    entrypoint: ["mc"]
+    environment:
+      MC_HOST_local: http://${MINIO_ROOT_USER}:${MINIO_ROOT_PASSWORD}@minio:9000
+      MC_HOST_app: http://${MINIO_APP_ACCESS_KEY}:${MINIO_APP_SECRET_KEY}@minio:9000
+      MC_CONFIG_DIR: /tmp/.mc
+    volumes:
+      - ./playground:/playground # drop files here to upload them with mc
+    working_dir: /playground
+
+volumes:
+  minio-data:
