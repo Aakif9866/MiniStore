@@ -20,6 +20,10 @@ const schema = z.object({
 
   // Uploads are buffered in memory for now, so this also caps RAM per request (see Phase 5).
   MAX_UPLOAD_BYTES: z.coerce.number().int().positive().default(10 * 1024 * 1024),
+  // Total bytes one user may store.
+  MAX_USER_STORAGE_BYTES: z.coerce.number().int().positive().default(1024 ** 3),
+  // Requests per IP to /auth/* in a 15-minute window. Slows password guessing.
+  AUTH_RATE_LIMIT: z.coerce.number().int().positive().default(20),
 });
 
 // Fail fast at startup with a clear message, instead of failing on the first request.

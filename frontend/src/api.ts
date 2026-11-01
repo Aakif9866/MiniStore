@@ -65,6 +65,8 @@ export const api = {
 
   listFiles: () => request<FileDto[]>("/files"),
 
+  usage: () => request<{ usedBytes: number; quotaBytes: number; fileCount: number }>("/files/usage"),
+
   deleteFile: (id: string) => request<void>(`/files/${id}`, { method: "DELETE" }),
 
   /** XHR instead of fetch: fetch still can't report upload progress. */

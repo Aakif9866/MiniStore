@@ -9,6 +9,7 @@ import { prisma } from "../db";
 import { HttpError } from "../errors";
 import type { File } from "../generated/prisma/client";
 import { bucket, deleteObject, getObject, putObject } from "../storage";
+import { checkUpload, sanitizeFilename, SNIFF_BYTES } from "../upload-policy";
 
 export const filesRouter = Router();
 filesRouter.use(requireAuth);
@@ -52,11 +53,19 @@ function toDto(f: File) {
 filesRouter.post("/upload", upload.single("file"), async (req, res) => {
   if (!req.file) throw new HttpError(400, 'Send the file as multipart/form-data field "file"');
   const userId = req.userId!;
+  const name = sanitizeFilename(req.file.originalname);
+  const mimeType = checkUpload(name, req.file.buffer.subarray(0, SNIFF_BYTES), req.file.mimetype);
+
+  // ponytail: two concurrent uploads can both pass this check and overshoot the quota by one
+  // file. A per-user lock (or SELECT … FOR UPDATE) closes it if exact quotas ever matter.
+  const used = await usedBytes(userId);
+  if (used + req.file.size > config.MAX_USER_STORAGE_BYTES) {
+    throw new HttpError(403, "Storage quota exceeded");
+  }
 
   // We choose the key. The user's filename is only stored as metadata, so it can never
   // cause path traversal or overwrite someone else's object.
   const objectKey = `users/${userId}/${randomUUID()}`;
-  const mimeType = req.file.mimetype || "application/octet-stream";
 
   // Step 1: bytes → MinIO.
   const { etag, versionId } = await putObject(objectKey, req.file.buffer, mimeType);
@@ -67,7 +76,7 @@ filesRouter.post("/upload", upload.single("file"), async (req, res) => {
     const file = await prisma.file.create({
       data: {
         userId,
-        originalName: req.file.originalname,
+        originalName: name,
         objectKey,
         bucket,
         mimeType,
@@ -83,6 +92,21 @@ filesRouter.post("/upload", upload.single("file"), async (req, res) => {
     );
     throw err;
   }
+});
+
+async function usedBytes(userId: string): Promise<number> {
+  const { _sum } = await prisma.file.aggregate({ where: { userId }, _sum: { size: true } });
+  return Number(_sum.size ?? 0);
+}
+
+// Registered before "/:id" so "usage" isn't treated as a file id.
+filesRouter.get("/usage", async (req, res) => {
+  const userId = req.userId!;
+  res.json({
+    usedBytes: await usedBytes(userId),
+    quotaBytes: config.MAX_USER_STORAGE_BYTES,
+    fileCount: await prisma.file.count({ where: { userId } }),
+  });
 });
 
 filesRouter.get("/", async (req, res) => {

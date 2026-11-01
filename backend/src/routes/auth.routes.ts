@@ -2,10 +2,13 @@ import { Router } from "express";
 import { z } from "zod";
 import { hashPassword, signToken, verifyPassword } from "../auth";
 import { prisma } from "../db";
+import { config } from "../config";
 import { HttpError } from "../errors";
 import { Prisma } from "../generated/prisma/client";
+import { rateLimit } from "../security";
 
 export const authRouter = Router();
+authRouter.use(rateLimit({ windowMs: 15 * 60_000, max: config.AUTH_RATE_LIMIT }));
 
 const credentials = z.object({
   email: z.string().trim().toLowerCase().pipe(z.email().max(254)), // normalise, THEN validate

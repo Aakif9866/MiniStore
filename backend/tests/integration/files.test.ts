@@ -76,6 +76,7 @@ describe("upload → list → get → download → delete", () => {
 
   it("stores a path-like filename as plain metadata, never as the key", async () => {
     const res = await upload(alice, "x", "../../etc/passwd").expect(201);
+    expect(res.body.name).toBe("passwd"); // directory parts stripped from the display name
     const row = await prisma.file.findUniqueOrThrow({ where: { id: res.body.id } });
     expect(row.objectKey).not.toContain("..");
   });
@@ -124,5 +125,55 @@ describe("consistency between MinIO and Postgres", () => {
     expect(await objectExists(attempted)).toBe(false);
     spy.mockRestore();
     silence.mockRestore();
+  });
+});
+
+describe("secure uploads (Phase 3)", () => {
+  it("rejects an executable even when it's renamed to .jpg, storing nothing", async () => {
+    const res = await upload(alice, Buffer.from("MZ\x90\x00 fake exe", "latin1"), "cat.jpg").expect(415);
+    expect(res.body.error).toMatch(/executable/i);
+    expect(await prisma.file.count()).toBe(0);
+  });
+
+  it("stores the type detected from content, not the one the client claimed", async () => {
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+    const res = await request(app)
+      .post("/files/upload")
+      .set("Authorization", `Bearer ${alice}`)
+      .attach("file", png, { filename: "image.txt", contentType: "text/plain" })
+      .expect(201);
+    expect(res.body.mimeType).toBe("image/png");
+  });
+
+  it("never stores HTML as text/html (it would run as a page if opened inline)", async () => {
+    const res = await request(app)
+      .post("/files/upload")
+      .set("Authorization", `Bearer ${alice}`)
+      .attach("file", Buffer.from("<script>alert(1)</script>"), { filename: "x.html", contentType: "text/html" })
+      .expect(201);
+    expect(res.body.mimeType).toBe("application/octet-stream");
+  });
+
+  it("enforces the per-user storage quota and reports usage", async () => {
+    const MiB = 1024 * 1024;
+    for (let i = 0; i < 3; i++) await upload(alice, Buffer.alloc(MiB - 10), `part${i}.bin`).expect(201);
+    const res = await upload(alice, Buffer.alloc(100), "one-too-many.bin").expect(403);
+    expect(res.body.error).toMatch(/quota/i);
+
+    const usage = await request(app).get("/files/usage").set("Authorization", `Bearer ${alice}`).expect(200);
+    expect(usage.body).toEqual({ usedBytes: 3 * (MiB - 10), quotaBytes: 3 * MiB, fileCount: 3 });
+
+    // Quotas are per user: Bob is unaffected by Alice's usage.
+    await upload(bob, "fine", "bob.txt").expect(201);
+  });
+
+  it("sends defensive security headers on every response", async () => {
+    const res = await request(app).get("/files").set("Authorization", `Bearer ${alice}`).expect(200);
+    expect(res.headers).toMatchObject({
+      "x-content-type-options": "nosniff",
+      "x-frame-options": "DENY",
+      "cache-control": "no-store",
+    });
+    expect(res.headers).not.toHaveProperty("x-powered-by");
   });
 });

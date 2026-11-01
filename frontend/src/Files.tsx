@@ -52,11 +52,14 @@ export function Files() {
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
   const [dragging, setDragging] = useState(false);
+  const [usage, setUsage] = useState<{ usedBytes: number; quotaBytes: number } | null>(null);
   const picker = useRef<HTMLInputElement>(null);
 
   const report = (err: unknown) => setError((err as Error).message);
   const refresh = useCallback(() => api.listFiles().then(setFiles).catch(report), []);
   useEffect(() => void refresh(), [refresh]);
+  // Usage follows the file list: any upload or delete changes it.
+  useEffect(() => void api.usage().then(setUsage).catch(report), [files]);
 
   function uploadAll(list: FileList | null) {
     if (!list?.length) return;
@@ -83,7 +86,7 @@ export function Files() {
   }
 
   const shown = files?.filter((f) => f.name.toLowerCase().includes(query.toLowerCase())) ?? [];
-  const totalSize = files?.reduce((sum, f) => sum + f.size, 0) ?? 0;
+  const usedPct = usage ? Math.min(100, (usage.usedBytes / usage.quotaBytes) * 100) : 0;
 
   return (
     <div className="mx-auto max-w-6xl p-4 sm:p-6">
@@ -102,8 +105,19 @@ export function Files() {
           <h1 className="text-3xl font-bold lg:text-5xl">Your files</h1>
           <p className="mt-2 flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
             <HardDrive size={16} className="text-teal-500" />
-            {files ? `${files.length} file${files.length === 1 ? "" : "s"} · ${formatSize(totalSize)}` : "Loading…"}
+            {usage ? `${formatSize(usage.usedBytes)} of ${formatSize(usage.quotaBytes)} used` : "Loading…"}
           </p>
+          <div
+            role="progressbar"
+            aria-label="Storage used"
+            aria-valuenow={Math.round(usedPct)}
+            className="mt-2 h-1.5 w-56 overflow-hidden rounded-full bg-gray-200 dark:bg-ink-800"
+          >
+            <div
+              className={`h-full transition-[width] duration-500 ${usedPct > 90 ? "bg-red-500" : "brand-gradient"}`}
+              style={{ width: `${usedPct}%` }}
+            />
+          </div>
         </div>
         <label className="relative sm:w-72">
           <Search size={16} className="absolute top-1/2 left-3 -translate-y-1/2 text-gray-400" />

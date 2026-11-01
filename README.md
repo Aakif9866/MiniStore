@@ -122,8 +122,8 @@ docker compose down      # data survives in Docker volumes; add -v to wipe it
 | 1 | [Object storage + MinIO in Docker](docs/01-object-storage.md) | ✅ done |
 | 2 | [Backend integration (Express + Postgres + MinIO)](docs/02-backend.md) | ✅ done |
 | — | Web frontend (React + Vite + Tailwind) | ✅ done |
-| 3 | Secure uploads (size/MIME limits, filename sanitising) | next |
-| 4 | Presigned URLs (browser ↔ MinIO directly) | |
+| 3 | [Secure uploads](docs/03-secure-uploads.md) (type sniffing, exe blocking, quotas, rate limits) | ✅ done |
+| 4 | Presigned URLs (browser ↔ MinIO directly) | next |
 | 5 | Large files (streaming, multipart upload) | |
 | 6 | Versioning | |
 | 7 | Lifecycle rules (expiry, retention) | |
