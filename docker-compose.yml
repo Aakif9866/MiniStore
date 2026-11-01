@@ -115,6 +115,15 @@ services:
       - grafana-data:/var/lib/grafana
     depends_on: [prometheus]
 
+  # ---------- Load testing (Phase 9): docker compose run --rm k6 run -e SCENARIO=read /scripts/ministore.js ----------
+  k6:
+    image: grafana/k6:1.2.3@sha256:4f82892217f3110cb233e2b2622bcc97fabc70f14bd241fbfbfe7305105c68aa
+    profiles: ["loadtest"]
+    volumes:
+      - ./loadtest:/scripts:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
 volumes:
   minio-data:
   postgres-data:

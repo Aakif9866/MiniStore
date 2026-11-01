@@ -1,140 +1,190 @@
 # MiniStore
 
-A small, production-style file storage service — think a private "Google Drive" backed by S3-style
-object storage. Users sign up, upload files, list them, download them, and delete them.
+A small, production-style file storage service — a private "Google Drive" backed by S3-style object
+storage. Users sign up, upload files, keep version history, restore from a trash, and download through
+short-lived signed links.
 
 It's built phase by phase as a learning lab for **object storage (MinIO / S3 API)**, backend
-infrastructure, and later observability, failure testing, and disaster recovery.
+infrastructure, observability, load testing, and (still to come) failure testing and disaster recovery.
+Everything runs **locally in Docker** — no cloud account or deployment needed.
 
-> **Core rule:** file **bytes** live in **MinIO**. Facts **about** files (owner, name, size, where the
-> bytes are) live in **PostgreSQL**. Neither store does the other's job.
+> **Core rule:** file **bytes** live in **MinIO**. Facts **about** files (owner, name, size, versions,
+> where the bytes are) live in **PostgreSQL**. Neither store does the other's job.
+
+## Where things stand
+
+| Phase | Topic | Status | Doc |
+|---|---|---|---|
+| 0 | Overview & architecture | ✅ done | [00](docs/00-overview.md) |
+| 1 | Object storage + MinIO in Docker | ✅ done | [01](docs/01-object-storage.md) |
+| 2 | Backend: Express + Postgres + MinIO | ✅ done | [02](docs/02-backend.md) |
+| — | Web frontend (React + Vite + Tailwind) | ✅ done | [frontend/README](frontend/README.md) |
+| 3 | Secure uploads: type sniffing, exe blocking, quotas, rate limits, headers | ✅ done | [03](docs/03-secure-uploads.md) |
+| 4 | Presigned download URLs | ✅ done | [04](docs/04-presigned-urls.md) |
+| 5 | Large files: streaming + S3 multipart | ✅ done | [05](docs/05-large-files.md) |
+| 6 | Versioning: history, restore, pruning | ✅ done | [06](docs/06-versioning.md) |
+| 7 | Lifecycle: trash, retention, orphan cleanup, MinIO ILM | ✅ done | [07](docs/07-lifecycle.md) |
+| 8 | Observability: logs, RED metrics, Grafana, alerts, readiness | ✅ done | [08](docs/08-observability.md) |
+| 9 | Load testing (k6) + multi-core cluster mode | 🟡 **in progress** | [09](docs/09-load-testing.md) |
+| 10 | Failure testing | ⬜ not started | |
+| 11 | Backup & disaster recovery | ⬜ | |
+| 12 | High availability (distributed MinIO, erasure coding) | ⬜ | |
+| 13 | CI/CD (GitHub Actions) + Docker images | ⬜ | |
+| 14 | Security review (httpOnly cookies, encryption at rest, checklist) | ⬜ | |
+| 15 | Production design (10 → 10,000+ users) | ⬜ | |
+
+**Tests:** 83 passing (unit + integration against real Postgres and MinIO).
+**Branch:** all work since Phase 2 is on `frontend-and-docs` (not yet merged into `main`).
 
 ## Tech stack
 
 | Layer | Tech | Why |
 |---|---|---|
 | Frontend | React 19, TypeScript, Vite, Tailwind CSS v4 | Fast dev server, typed API calls, utility-first styling |
-| API | Node.js, Express 5, TypeScript, Zod | Small, explicit HTTP layer; Zod validates every input |
+| API | Node.js, Express 5, TypeScript, Zod | Small, explicit HTTP layer; Zod validates every input and the config |
 | Auth | JWT (HS256) + scrypt password hashing | Stateless sessions; scrypt is built into Node and memory-hard |
-| Metadata DB | PostgreSQL 18 + Prisma 7 | Relations, unique constraints, migrations |
+| Metadata DB | PostgreSQL 18 + Prisma 7 | Relations, constraints, migrations |
 | Object storage | MinIO via **AWS SDK v3** (S3 API) | Same code would work against AWS S3 — only the endpoint changes |
-| Infra | Docker Compose | One command brings up MinIO + Postgres |
-| Tests | Jest + Supertest | Integration tests hit a real Postgres and a real MinIO |
+| Uploads | busboy + `@aws-sdk/lib-storage` | Streams into S3 multipart; memory doesn't grow with file size |
+| Observability | pino, prom-client, Prometheus, Grafana | JSON logs with request ids; RED metrics; dashboard + alerts |
+| Load testing | k6 (in Docker) | Scripted scenarios with pass/fail thresholds |
+| Infra | Docker Compose | One command brings up everything |
+| Tests | Jest + Supertest | Integration tests hit real services, in a separate DB and bucket |
 
 ## Architecture
 
 ```
  Browser (React, :5173)
-    │  /api/*  (Vite dev proxy strips "/api")
-    ▼
- Express API (:3000) ── JWT check ── Zod validation
-    │                         │
-    │ metadata (SQL)          │ bytes (S3 API, least-privilege key)
-    ▼                         ▼
- PostgreSQL (:5433)       MinIO (:9100 API, :9101 Console)
-   users, files             bucket "ministore-dev"
-                            key  users/<userId>/<uuid>
+    │ /api/*  (Vite dev proxy)                     ▲ presigned GET (bytes straight from MinIO)
+    ▼                                              │
+ Express API (:3000)  ── WEB_CONCURRENCY workers ──┤
+    │  JWT · Zod · rate limit · security headers   │
+    │                                              │
+    │ metadata (SQL)            bytes (S3 API, least-privilege key, versioned bucket)
+    ▼                           ▼
+ PostgreSQL (:5433)          MinIO (:9100 API, :9101 Console)
+   users, files,               ministore-dev        (app data)
+   file_versions               ministore-dev-test   (tests only)
+
+ Metrics (:9464, localhost only) ◀── Prometheus (:9090) ◀── Grafana (:3001)
+ Lifecycle job (hourly): purge old trash · prune versions · delete orphan objects
 ```
 
-Everything except the browser runs on `127.0.0.1` only — nothing is exposed to your network.
+Every port is bound to `127.0.0.1`. Nothing is reachable from your network.
 
-## How a request flows
+## How the main flows work
 
-### Sign up → log in
-1. The frontend sends `POST /api/auth/register` with email + password.
-2. The API validates input with Zod, hashes the password with scrypt, and inserts a `users` row.
-   Duplicate emails are rejected by the database's `UNIQUE` constraint (→ `409`).
-3. The frontend calls `POST /api/auth/login`; the API returns a JWT valid for 1 hour.
-4. The frontend stores the token and sends it as `Authorization: Bearer <token>` on every request.
+**Sign up / log in** — Zod validates; scrypt hashes; the `UNIQUE` constraint rejects duplicate emails
+(409); login returns a 1-hour JWT. `/auth/*` is rate-limited per IP (429).
 
-### Upload a file
-1. The browser sends the file as `multipart/form-data` (with a progress bar via XHR).
-2. `requireAuth` verifies the JWT and attaches `userId` to the request.
-3. The API generates the object key itself — `users/<userId>/<random-uuid>`. The user's filename
-   is stored only as metadata, so it can never cause path traversal or overwrite another file.
-4. **Bytes → MinIO** (`PutObject`), using an app account that can only touch this one bucket.
-5. **Metadata → Postgres** (`files` row: name, size, MIME type, ETag, object key).
-6. If step 5 fails, the API deletes the object from step 4 so no orphan is left behind.
+**Upload** (`POST /files/upload`, multipart) — JWT check → work out how much quota is left → busboy
+streams the body → the first 16 bytes are sniffed (executables → 415; the real type is stored, not the
+client's claim) → bytes stream to MinIO as an S3 multipart upload (8 MiB parts) under a key **we**
+generate (`users/<userId>/<uuid>`) → size and quota limits enforced mid-stream (413/403, no partial
+object left) → Postgres rows for the file and its first version. If the database write fails, the
+uploaded version is deleted.
 
-### Download / delete
-- **Download:** look up the row *only if it belongs to the caller* (someone else's file → `404`,
-  not `403`, so IDs can't be probed), then stream the object from MinIO straight to the client.
-- **Delete:** delete the row first, then the object. A failed object delete leaves a harmless
-  invisible orphan; the opposite order could leave a row pointing at nothing.
+**Download** — `GET /files/:id/download-url` checks ownership and returns a 5-minute presigned URL,
+pinned to the current version and forced to `attachment`. The browser downloads straight from MinIO.
+
+**New version / restore** — uploading to `/files/:id/versions` adds an S3 version; restore copies an
+old version on top (history is never rewritten). History is capped at `MAX_VERSIONS`. Quota counts
+every version.
+
+**Delete** — moves the file to the trash (restorable for 30 days). Permanent delete removes the rows,
+then every S3 version and delete marker.
+
+**Lifecycle job** — hourly (or `npm run lifecycle`): purges expired trash, prunes versions, deletes
+orphan bytes older than 1 hour, and *reports* (never deletes) rows whose bytes are missing.
+
+Someone else's file always returns **404, not 403**, so ids can't be probed.
 
 ## Project structure
 
 ```
 .
-├── docker-compose.yml     MinIO + Postgres + one-shot MinIO setup job + mc CLI
-├── .env.example           Every setting, documented. Copy to .env (git-ignored)
+├── docker-compose.yml      MinIO, Postgres, init job, mc CLI; profiles: observability, loadtest
+├── .env.example            Every setting, documented. Copy to .env (git-ignored)
 ├── infra/
-│   ├── minio/init.sh      Creates the bucket, a least-privilege policy, and the app user
-│   └── postgres/init/     Creates the separate ministore_test database on first start
-├── backend/               Express API          → see backend/README.md
-├── frontend/              React UI             → see frontend/README.md
-└── docs/                  One write-up per phase (what, why, what was learned)
+│   ├── minio/init.sh       Buckets, versioning, lifecycle rule, least-privilege policy + app user
+│   ├── postgres/init/      Creates the ministore_test database
+│   ├── prometheus/         Scrape config + alert rules
+│   └── grafana/            Datasource + "MiniStore — API & Storage" dashboard
+├── backend/                Express API                       → backend/README.md
+├── frontend/               React UI                          → frontend/README.md
+├── loadtest/ministore.js   k6 scenarios: read, steady, login, upload, mixed
+└── docs/                   One write-up per phase: why, what was built, what broke, interview questions
 ```
 
 ## Run it locally
 
-Prerequisites: Docker Desktop and Node.js 20.19+.
+Prerequisites: Docker Desktop, Node.js 20.19+ (22+ recommended), **and ~5 GB free disk**.
 
 ```bash
-# 1. Configure secrets (replace every "change-me" — e.g. with: openssl rand -hex 20)
-cp .env.example .env
+cp .env.example .env                     # replace every "change-me" (openssl rand -hex 20)
+docker compose up -d                     # MinIO + Postgres (+ creates buckets and the app user)
 
-# 2. Start MinIO + Postgres
-docker compose up -d
+cd backend && npm install
+npm run db:migrate                       # create/upgrade tables — needed on any fresh database
+npm run dev                              # API on :3000, metrics on :9464, pretty logs
+npm test                                 # 83 tests (separate _test database and -test bucket)
 
-# 3. Backend (terminal 1)
-cd backend
-npm install
-npm run db:migrate       # create tables in the dev database — needed once per fresh DB
-npm run dev              # API on http://127.0.0.1:3000
+cd ../frontend && npm install && npm run dev   # UI on http://localhost:5173
 
-# 4. Frontend (terminal 2)
-cd frontend
-npm install
-npm run dev              # UI on http://localhost:5173
+# Optional
+docker compose --profile observability up -d                           # Prometheus + Grafana
+docker compose run --rm k6 run -e SCENARIO=read /scripts/ministore.js   # load test (see docs/09)
+npm run lifecycle -- --dry-run                                          # what cleanup would do
 
-# Tests (uses the separate ministore_test database)
-cd backend && npm test
-
-# Stop everything
-docker compose down      # data survives in Docker volumes; add -v to wipe it
+docker compose --profile observability stop    # stop; data survives in Docker volumes
 ```
 
 | Service | URL |
 |---|---|
 | Web app | http://localhost:5173 |
-| API | http://127.0.0.1:3000 (`/health` for a liveness check) |
+| API | http://127.0.0.1:3000 (`/health` liveness, `/ready` readiness) |
+| API metrics | http://127.0.0.1:9464/metrics |
+| Grafana | http://127.0.0.1:3001 (admin / `GRAFANA_ADMIN_PASSWORD`) |
+| Prometheus | http://127.0.0.1:9090 (`/alerts` for firing alerts) |
 | MinIO Console | http://127.0.0.1:9101 (root user/password from `.env`) |
-| MinIO S3 API | http://127.0.0.1:9100 |
 | PostgreSQL | `127.0.0.1:5433` |
-| `mc` CLI | `docker compose run --rm mc ls local/ministore-dev` |
 
-## Roadmap
+## Session log — where we stopped (2026-11-01)
 
-| Phase | Topic | Status |
-|---|---|---|
-| 0 | [Overview & architecture](docs/00-overview.md) | ✅ done |
-| 1 | [Object storage + MinIO in Docker](docs/01-object-storage.md) | ✅ done |
-| 2 | [Backend integration (Express + Postgres + MinIO)](docs/02-backend.md) | ✅ done |
-| — | Web frontend (React + Vite + Tailwind) | ✅ done |
-| 3 | [Secure uploads](docs/03-secure-uploads.md) (type sniffing, exe blocking, quotas, rate limits) | ✅ done |
-| 4 | [Presigned URLs](docs/04-presigned-urls.md) (browser ↔ MinIO directly) | ✅ done |
-| 5 | [Large files](docs/05-large-files.md) (streaming, multipart upload) | ✅ done |
-| 6 | [Versioning](docs/06-versioning.md) (history, restore, pruning) | ✅ done |
-| 7 | [Lifecycle](docs/07-lifecycle.md) (trash, retention, orphan cleanup, ILM) | ✅ done |
-| 8 | [Observability](docs/08-observability.md) (logs, RED metrics, Grafana, alerts) | ✅ done |
-| 9 | Load testing (k6) | next |
-| 10 | Failure testing | |
-| 11 | Backup & disaster recovery | |
-| 12 | High availability (distributed MinIO) | |
-| 13 | CI/CD (GitHub Actions) | |
-| 14 | Security review | |
-| 15 | Production design | |
+What happened this session, in order:
 
-Each phase doc in [`docs/`](docs/) has a **Before** section (what we're building and why) and an
-**After** section (what was built, what broke, what's still open).
+1. Checked the project (Phases 0–2 done, 23 tests) → added the **React frontend** and READMEs.
+2. **Security & compliance check** before pushing: no secrets in git; patched `body-parser`
+   (GHSA-27r3-jxmh-p828, high-severity DoS); licences all permissive except MinIO (AGPL, used
+   unmodified as a separate service → no obligations); `minio.license` git-ignored (not needed to run).
+   Pushed to `origin/frontend-and-docs`.
+3. Decided **no deployment**: local Docker only.
+4. Built **Phases 3–8**, each with tests, a doc and a commit. Tests went 23 → 83.
+5. Started **Phase 9**: found and fixed the single-core bottleneck (cluster mode, ~2.5× throughput),
+   measured login, then **the laptop's disk filled up** during the upload test and the session ended.
+
+**Not yet done:**
+
+- Phase 9: the upload and mixed load scenarios must be re-run with free disk. Checklist at the end of
+  [docs/09](docs/09-load-testing.md).
+- Commits after the first push (Phases 3–9) are **local only** — run `git push` when ready.
+- Phases 10–15 not started.
+- No LICENSE file yet (without one, others may not reuse the code; MIT is common for portfolios).
+
+**Before running anything again:** free disk space. Docker's disk image grows and doesn't shrink on its
+own (`docker system df` shows what's using it).
+
+## Suggested order to understand the code
+
+1. [docs/00-overview.md](docs/00-overview.md) — the big picture and the "two stores" problem.
+2. `infra/minio/init.sh` + [docs/01](docs/01-object-storage.md) — buckets, policies, least privilege.
+3. `backend/src/app.ts` → `routes/auth.routes.ts` → `auth.ts` — how a request is handled and authenticated.
+4. `backend/src/routes/files.routes.ts` — read top to bottom; every route follows "find owned file → act".
+5. `backend/src/upload-stream.ts` + `upload-policy.ts` — the hardest part: streaming, sniffing, limits.
+6. `backend/src/storage.ts` — every S3 call in one file (multipart via lib-storage, presign, versions, purge).
+7. `backend/src/file-service.ts` + `lifecycle.ts` — keeping Postgres and MinIO consistent over time.
+8. `backend/src/observability.ts` + `server.ts` — logs, metrics, cluster mode.
+9. `backend/tests/integration/*.test.ts` — each test is a small, runnable explanation of one behaviour.
+10. `frontend/src/api.ts` → `Files.tsx` → `Versions.tsx` / `Trash.tsx`.
+
+Each phase doc ends with interview questions — try answering them without looking.

@@ -77,11 +77,14 @@ export const requestObserver: RequestHandler = (req, res, next) => {
 };
 
 /** Metrics live on their own port, bound to localhost: never exposed on the public API port. */
-export function createMetricsApp() {
+export function createMetricsApp(
+  collect: () => Promise<string> = () => registry.metrics(),
+  contentType: string = registry.contentType,
+) {
   const app = express();
   app.get("/metrics", async (_req, res) => {
-    res.set("Content-Type", registry.contentType);
-    res.send(await registry.metrics());
+    res.set("Content-Type", contentType);
+    res.send(await collect());
   });
   return app;
 }

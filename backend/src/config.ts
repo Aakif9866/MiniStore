@@ -7,6 +7,8 @@ loadDotenv({ path: path.resolve(__dirname, "../../.env"), quiet: true });
 
 const schema = z.object({
   PORT: z.coerce.number().int().default(3000),
+  // API worker processes (Phase 9). 1 = single process (dev). Set to the number of CPU cores in production.
+  WEB_CONCURRENCY: z.coerce.number().int().min(1).default(1),
   DATABASE_URL: z.url(),
 
   S3_ENDPOINT: z.url(),

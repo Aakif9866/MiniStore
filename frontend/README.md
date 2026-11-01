@@ -13,7 +13,10 @@ frontend/
     ├── main.tsx        Mounts <App /> into #root
     ├── App.tsx         Shows <Auth /> or <Files /> depending on whether a token exists; <Logo />
     ├── Auth.tsx        Sign-in / create-account form
-    ├── Files.tsx       Upload zone, upload progress, search, file grid, download/delete
+    ├── Files.tsx       Usage bar, tabs (My files / Trash), upload zone, progress, search, file grid
+    ├── Versions.tsx    Version history in a native <dialog>: download, restore, delete, upload new
+    ├── Trash.tsx       Restore, delete forever, empty trash
+    ├── format.ts       File sizes and "2 hours ago" dates (Intl APIs, no libraries)
     ├── api.ts          Every call to the backend, token storage, error handling
     └── index.css       Tailwind import, dark-mode colours, brand gradient, entrance animation
 ```
@@ -33,9 +36,12 @@ after 1 hour), the token is cleared and the user lands back on the login screen.
 upload progress. Several files upload in parallel, each with its own progress bar; each finished
 upload is added to the top of the grid without reloading the list.
 
-**Downloads.** The file is fetched with the JWT, turned into a Blob, and saved through a temporary
-`<a download>` link. (Phase 4 will switch to presigned URLs so the browser downloads directly
-from MinIO.)
+**Downloads.** The app asks the API for a presigned URL (5 minutes, pinned to one version) and
+navigates to it. MinIO answers with `Content-Disposition: attachment`, so the browser saves the file
+without leaving the page — the bytes never pass through the API.
+
+**Versions and trash.** "History" on a card opens the version dialog. "Delete" moves a file to the
+trash without a confirmation (it's reversible); deleting from the trash asks first.
 
 **Errors.** The backend always responds with `{ "error": "..." }`. `api.ts` turns that into an
 `ApiError`, and the UI shows the message in a dismissible banner.
@@ -63,4 +69,5 @@ from MinIO.)
 - Token in `localStorage` can be read by any script injected into the page (XSS). Moving to an
   httpOnly cookie is planned for the security phase.
 - The list shows the newest 100 files; there is no pagination yet.
+- Search filters only the files already loaded (client-side).
 - There is no production server config yet — `dist/` needs a web server that also proxies `/api`.
