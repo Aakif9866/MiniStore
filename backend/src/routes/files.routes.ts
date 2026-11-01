@@ -1,28 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { pipeline } from "node:stream/promises";
 import { Router } from "express";
-import multer from "multer";
 import { z } from "zod";
 import { requireAuth } from "../auth";
 import { config } from "../config";
 import { prisma } from "../db";
 import { HttpError } from "../errors";
 import type { File } from "../generated/prisma/client";
-import { bucket, deleteObject, getObject, presignDownload, putObject } from "../storage";
-import { checkUpload, sanitizeFilename, SNIFF_BYTES } from "../upload-policy";
+import { bucket, deleteObject, getObject, presignDownload } from "../storage";
+import { receiveUpload } from "../upload-stream";
 
 export const filesRouter = Router();
 filesRouter.use(requireAuth);
-
-// DELIBERATE SIMPLIFICATION: memoryStorage holds the whole upload in RAM before we send it to
-// MinIO. Fine for small files; Phase 5 measures why this breaks for large ones and replaces it
-// with streaming.
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: config.MAX_UPLOAD_BYTES, files: 1 },
-  // Browsers and curl send filenames as raw UTF-8; multer's default (latin1) turns "é" into "Ã©".
-  defParamCharset: "utf8",
-});
 
 const idParam = z.object({ id: z.uuid() });
 
@@ -50,25 +39,25 @@ function toDto(f: File) {
   };
 }
 
-filesRouter.post("/upload", upload.single("file"), async (req, res) => {
-  if (!req.file) throw new HttpError(400, 'Send the file as multipart/form-data field "file"');
+filesRouter.post("/upload", async (req, res) => {
   const userId = req.userId!;
-  const name = sanitizeFilename(req.file.originalname);
-  const mimeType = checkUpload(name, req.file.buffer.subarray(0, SNIFF_BYTES), req.file.mimetype);
 
-  // ponytail: two concurrent uploads can both pass this check and overshoot the quota by one
-  // file. A per-user lock (or SELECT … FOR UPDATE) closes it if exact quotas ever matter.
-  const used = await usedBytes(userId);
-  if (used + req.file.size > config.MAX_USER_STORAGE_BYTES) {
-    throw new HttpError(403, "Storage quota exceeded");
-  }
+  // The quota is enforced WHILE streaming: the limit for this upload is whatever is left.
+  // ponytail: two concurrent uploads each see the same "left" and can overshoot by one file.
+  // A per-user lock (or SELECT … FOR UPDATE) closes it if exact quotas ever matter.
+  const left = config.MAX_USER_STORAGE_BYTES - (await usedBytes(userId));
+  if (left <= 0) throw new HttpError(403, "Storage quota exceeded");
+  const overQuota = left < config.MAX_UPLOAD_BYTES;
+  const tooLarge = overQuota
+    ? new HttpError(403, "Storage quota exceeded")
+    : new HttpError(413, "File too large");
 
   // We choose the key. The user's filename is only stored as metadata, so it can never
   // cause path traversal or overwrite someone else's object.
   const objectKey = `users/${userId}/${randomUUID()}`;
 
-  // Step 1: bytes → MinIO.
-  const { etag, versionId } = await putObject(objectKey, req.file.buffer, mimeType);
+  // Step 1: bytes → MinIO, streamed in parts (never the whole file in memory).
+  const up = await receiveUpload(req, objectKey, Math.min(left, config.MAX_UPLOAD_BYTES), tooLarge);
 
   // Step 2: metadata → Postgres. If this fails, the object from step 1 is an orphan:
   // try to remove it, and if even that fails it stays orphaned (harmless, cleanable later).
@@ -76,13 +65,13 @@ filesRouter.post("/upload", upload.single("file"), async (req, res) => {
     const file = await prisma.file.create({
       data: {
         userId,
-        originalName: name,
+        originalName: up.name,
         objectKey,
         bucket,
-        mimeType,
-        size: BigInt(req.file.size),
-        etag,
-        versionId,
+        mimeType: up.mimeType,
+        size: BigInt(up.size),
+        etag: up.etag,
+        versionId: up.versionId,
       },
     });
     res.status(201).json(toDto(file));

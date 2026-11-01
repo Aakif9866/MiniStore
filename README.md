@@ -124,8 +124,8 @@ docker compose down      # data survives in Docker volumes; add -v to wipe it
 | — | Web frontend (React + Vite + Tailwind) | ✅ done |
 | 3 | [Secure uploads](docs/03-secure-uploads.md) (type sniffing, exe blocking, quotas, rate limits) | ✅ done |
 | 4 | [Presigned URLs](docs/04-presigned-urls.md) (browser ↔ MinIO directly) | ✅ done |
-| 5 | Large files (streaming, multipart upload) | next |
-| 6 | Versioning | |
+| 5 | [Large files](docs/05-large-files.md) (streaming, multipart upload) | ✅ done |
+| 6 | Versioning | next |
 | 7 | Lifecycle rules (expiry, retention) | |
 | 8 | Observability (Prometheus + Grafana) | |
 | 9 | Load testing (k6) | |

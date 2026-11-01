@@ -22,8 +22,8 @@ const schema = z.object({
   JWT_SECRET: z.string().min(32, "JWT_SECRET must be at least 32 characters"),
   JWT_EXPIRES_IN: z.string().default("1h"),
 
-  // Uploads are buffered in memory for now, so this also caps RAM per request (see Phase 5).
-  MAX_UPLOAD_BYTES: z.coerce.number().int().positive().default(10 * 1024 * 1024),
+  // Largest single file. Uploads stream (Phase 5), so this no longer limits server memory.
+  MAX_UPLOAD_BYTES: z.coerce.number().int().positive().default(1024 ** 3),
   // Total bytes one user may store.
   MAX_USER_STORAGE_BYTES: z.coerce.number().int().positive().default(1024 ** 3),
   // Requests per IP to /auth/* in a 15-minute window. Slows password guessing.

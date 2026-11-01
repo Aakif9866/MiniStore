@@ -46,9 +46,9 @@ export async function getObject(key: string) {
   return { body: res.Body as Readable, contentLength: res.ContentLength };
 }
 
-export async function deleteObject(key: string) {
+export async function deleteObject(key: string, versionId?: string) {
   // S3 DELETE is idempotent: deleting a missing key still succeeds.
-  await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
+  await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: key, VersionId: versionId }));
 }
 
 /**
