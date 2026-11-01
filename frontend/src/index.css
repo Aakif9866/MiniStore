@@ -1,0 +1,23 @@
+@import "tailwindcss";
+
+@theme {
+  /* Dark-mode elevation ladder: page → card → popover */
+  --color-ink-950: #0a0a0a;
+  --color-ink-900: #141414;
+  --color-ink-800: #1c1c1c;
+}
+
+@utility brand-gradient {
+  background-image: linear-gradient(to right, var(--color-indigo-500), var(--color-purple-500), var(--color-pink-500));
+}
+
+@keyframes rise {
+  from { opacity: 0; transform: translateY(8px); }
+}
+@utility animate-rise {
+  animation: rise 400ms ease-out backwards;
+}
+
+body {
+  @apply bg-gray-50 text-gray-800 antialiased dark:bg-ink-950 dark:text-gray-200;
+}

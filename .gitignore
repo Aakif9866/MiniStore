@@ -2,6 +2,8 @@
 .env
 .env.*
 !.env.example
+# MinIO SUBNET license token — not needed by the Chainguard AGPL build we run
+minio.license
 
 # Dependencies / build output
 node_modules/
