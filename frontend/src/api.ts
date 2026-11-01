@@ -13,6 +13,15 @@ export type FileDto = {
   updatedAt: string;
 };
 
+export type VersionDto = {
+  versionId: string;
+  size: number;
+  mimeType: string;
+  etag: string;
+  createdAt: string;
+  isCurrent: boolean;
+};
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -69,22 +78,22 @@ export const api = {
 
   deleteFile: (id: string) => request<void>(`/files/${id}`, { method: "DELETE" }),
 
-  /** XHR instead of fetch: fetch still can't report upload progress. */
-  upload(file: File, onProgress: (fraction: number) => void): Promise<FileDto> {
-    return new Promise((resolve, reject) => {
-      const xhr = new XMLHttpRequest();
-      xhr.open("POST", `${BASE}/files/upload`);
-      for (const [k, v] of Object.entries(authHeader())) xhr.setRequestHeader(k, v);
-      xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded / e.total);
-      xhr.onload = () => {
-        if (xhr.status === 201) return resolve(JSON.parse(xhr.responseText));
-        fail(new Response(xhr.responseText, { status: xhr.status })).catch(reject);
-      };
-      xhr.onerror = () => reject(new ApiError(0, "Network error"));
-      const form = new FormData();
-      form.append("file", file);
-      xhr.send(form);
-    });
+  upload: (file: File, onProgress: (fraction: number) => void) => sendFile("/files/upload", file, onProgress),
+
+  versions: (id: string) => request<VersionDto[]>(`/files/${id}/versions`),
+
+  uploadVersion: (id: string, file: File, onProgress: (fraction: number) => void) =>
+    sendFile(`/files/${id}/versions`, file, onProgress),
+
+  restoreVersion: (id: string, versionId: string) =>
+    request<FileDto>(`/files/${id}/versions/${encodeURIComponent(versionId)}/restore`, { method: "POST" }),
+
+  deleteVersion: (id: string, versionId: string) =>
+    request<void>(`/files/${id}/versions/${encodeURIComponent(versionId)}`, { method: "DELETE" }),
+
+  async downloadVersion(id: string, versionId: string) {
+    const { url } = await request<{ url: string }>(`/files/${id}/versions/${encodeURIComponent(versionId)}/download-url`);
+    window.location.assign(url);
   },
 
   /**
@@ -96,3 +105,21 @@ export const api = {
     window.location.assign(url);
   },
 };
+
+/** Multipart upload with progress. XHR instead of fetch: fetch still can't report upload progress. */
+function sendFile(path: string, file: File, onProgress: (fraction: number) => void): Promise<FileDto> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", BASE + path);
+    for (const [k, v] of Object.entries(authHeader())) xhr.setRequestHeader(k, v);
+    xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded / e.total);
+    xhr.onload = () => {
+      if (xhr.status === 201) return resolve(JSON.parse(xhr.responseText));
+      fail(new Response(xhr.responseText, { status: xhr.status })).catch(reject);
+    };
+    xhr.onerror = () => reject(new ApiError(0, "Network error"));
+    const form = new FormData();
+    form.append("file", file);
+    xhr.send(form);
+  });
+}

@@ -1,12 +1,12 @@
 import type { Express } from "express";
 import request from "supertest";
 import { prisma } from "../src/db";
-import { deleteObject } from "../src/storage";
+import { purgeObject } from "../src/storage";
 
 /** Remove every object the test DB knows about, then empty the tables. */
 export async function resetState() {
   const files = await prisma.file.findMany({ select: { objectKey: true } });
-  await Promise.all(files.map((f) => deleteObject(f.objectKey)));
+  await Promise.all(files.map((f) => purgeObject(f.objectKey))); // every version, not just the latest
   await prisma.$executeRaw`TRUNCATE files, users CASCADE`;
 }
 

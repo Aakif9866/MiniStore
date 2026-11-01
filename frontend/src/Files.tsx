@@ -8,6 +8,7 @@ import {
   FileText,
   FileVideo,
   HardDrive,
+  History,
   LogOut,
   Search,
   Trash2,
@@ -16,24 +17,10 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, setToken, type FileDto } from "./api";
 import { Logo } from "./App";
+import { formatSize, timeAgo } from "./format";
+import { Versions } from "./Versions";
 
 type Upload = { key: string; name: string; progress: number };
-
-const bytes = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 });
-function formatSize(n: number) {
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  const i = n > 0 ? Math.min(Math.floor(Math.log(n) / Math.log(1024)), units.length - 1) : 0;
-  return `${bytes.format(n / 1024 ** i)} ${units[i]}`;
-}
-
-const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
-function timeAgo(iso: string) {
-  const s = (new Date(iso).getTime() - Date.now()) / 1000;
-  for (const [unit, secs] of [["day", 86400], ["hour", 3600], ["minute", 60]] as const) {
-    if (Math.abs(s) >= secs) return rtf.format(Math.round(s / secs), unit);
-  }
-  return "just now";
-}
 
 // Icon + tint per file family: colour lives in icons, not in more buttons.
 function fileKind(mime: string) {
@@ -52,6 +39,7 @@ export function Files() {
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
   const [dragging, setDragging] = useState(false);
+  const [historyOf, setHistoryOf] = useState<FileDto | null>(null);
   const [usage, setUsage] = useState<{ usedBytes: number; quotaBytes: number } | null>(null);
   const picker = useRef<HTMLInputElement>(null);
 
@@ -219,6 +207,14 @@ export function Files() {
                   <Download size={15} /> Download
                 </button>
                 <button
+                  onClick={() => setHistoryOf(f)}
+                  aria-label={`Version history of ${f.name}`}
+                  title="Version history"
+                  className="rounded-lg border border-gray-200 px-3 text-gray-500 transition-colors duration-150 hover:border-teal-500 hover:bg-teal-500 hover:text-white active:scale-95 dark:border-white/10"
+                >
+                  <History size={15} />
+                </button>
+                <button
                   onClick={() => remove(f)}
                   aria-label={`Delete ${f.name}`}
                   className="rounded-lg border border-gray-200 px-3 text-gray-500 transition-colors duration-150 hover:border-red-500 hover:bg-red-500 hover:text-white active:scale-95 dark:border-white/10"
@@ -230,6 +226,17 @@ export function Files() {
           );
         })}
       </ul>
+
+      {historyOf && (
+        <Versions
+          file={historyOf}
+          onClose={() => setHistoryOf(null)}
+          // A restore or new upload changes size and type; a version delete changes usage.
+          onChanged={(updated) =>
+            setFiles((list) => list!.map((x) => (updated && x.id === updated.id ? updated : x)))
+          }
+        />
+      )}
     </div>
   );
 }

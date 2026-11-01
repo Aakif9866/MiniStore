@@ -26,6 +26,8 @@ const schema = z.object({
   MAX_UPLOAD_BYTES: z.coerce.number().int().positive().default(1024 ** 3),
   // Total bytes one user may store.
   MAX_USER_STORAGE_BYTES: z.coerce.number().int().positive().default(1024 ** 3),
+  // Versions kept per file (Phase 6); the oldest are deleted beyond this.
+  MAX_VERSIONS: z.coerce.number().int().min(1).max(100).default(10),
   // Requests per IP to /auth/* in a 15-minute window. Slows password guessing.
   AUTH_RATE_LIMIT: z.coerce.number().int().positive().default(20),
 });

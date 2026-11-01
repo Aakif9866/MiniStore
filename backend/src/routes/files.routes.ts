@@ -6,8 +6,8 @@ import { requireAuth } from "../auth";
 import { config } from "../config";
 import { prisma } from "../db";
 import { HttpError } from "../errors";
-import type { File } from "../generated/prisma/client";
-import { bucket, deleteObject, getObject, presignDownload } from "../storage";
+import type { File, FileVersion } from "../generated/prisma/client";
+import { bucket, copyVersion, deleteObject, getObject, presignDownload, purgeObject } from "../storage";
 import { receiveUpload } from "../upload-stream";
 
 export const filesRouter = Router();
@@ -39,25 +39,38 @@ function toDto(f: File) {
   };
 }
 
-filesRouter.post("/upload", async (req, res) => {
-  const userId = req.userId!;
-
-  // The quota is enforced WHILE streaming: the limit for this upload is whatever is left.
-  // ponytail: two concurrent uploads each see the same "left" and can overshoot by one file.
-  // A per-user lock (or SELECT … FOR UPDATE) closes it if exact quotas ever matter.
+/**
+ * How many bytes this user may still upload, and which error to give when a stream crosses it.
+ * The quota is enforced WHILE streaming: the limit for one upload is whatever is left.
+ * ponytail: two concurrent uploads each see the same "left" and can overshoot by one file.
+ * A per-user lock (or SELECT … FOR UPDATE) closes it if exact quotas ever matter.
+ */
+async function uploadLimit(userId: string) {
   const left = config.MAX_USER_STORAGE_BYTES - (await usedBytes(userId));
   if (left <= 0) throw new HttpError(403, "Storage quota exceeded");
   const overQuota = left < config.MAX_UPLOAD_BYTES;
-  const tooLarge = overQuota
-    ? new HttpError(403, "Storage quota exceeded")
-    : new HttpError(413, "File too large");
+  return {
+    limit: Math.min(left, config.MAX_UPLOAD_BYTES),
+    tooLarge: overQuota ? new HttpError(403, "Storage quota exceeded") : new HttpError(413, "File too large"),
+  };
+}
+
+/** Quota counts every stored version, not just the current one: old versions use disk too. */
+async function usedBytes(userId: string): Promise<number> {
+  const { _sum } = await prisma.fileVersion.aggregate({ where: { file: { userId } }, _sum: { size: true } });
+  return Number(_sum.size ?? 0);
+}
+
+filesRouter.post("/upload", async (req, res) => {
+  const userId = req.userId!;
+  const { limit, tooLarge } = await uploadLimit(userId);
 
   // We choose the key. The user's filename is only stored as metadata, so it can never
   // cause path traversal or overwrite someone else's object.
   const objectKey = `users/${userId}/${randomUUID()}`;
 
   // Step 1: bytes → MinIO, streamed in parts (never the whole file in memory).
-  const up = await receiveUpload(req, objectKey, Math.min(left, config.MAX_UPLOAD_BYTES), tooLarge);
+  const up = await receiveUpload(req, objectKey, limit, tooLarge);
 
   // Step 2: metadata → Postgres. If this fails, the object from step 1 is an orphan:
   // try to remove it, and if even that fails it stays orphaned (harmless, cleanable later).
@@ -72,21 +85,17 @@ filesRouter.post("/upload", async (req, res) => {
         size: BigInt(up.size),
         etag: up.etag,
         versionId: up.versionId,
+        versions: { create: versionData(up) },
       },
     });
     res.status(201).json(toDto(file));
   } catch (err) {
-    await deleteObject(objectKey).catch((e) =>
+    await deleteObject(objectKey, up.versionId ?? undefined).catch((e) =>
       console.error(`Orphaned object ${objectKey}: cleanup failed`, e),
     );
     throw err;
   }
 });
-
-async function usedBytes(userId: string): Promise<number> {
-  const { _sum } = await prisma.file.aggregate({ where: { userId }, _sum: { size: true } });
-  return Number(_sum.size ?? 0);
-}
 
 // Registered before "/:id" so "usage" isn't treated as a file id.
 filesRouter.get("/usage", async (req, res) => {
@@ -114,10 +123,10 @@ filesRouter.get("/:id", async (req, res) => {
 filesRouter.delete("/:id", async (req, res) => {
   const file = await findOwnedFile(req.userId!, req.params);
 
-  // Row first, then object. If the object delete fails, we're left with an orphan object
-  // (invisible to users). The reverse order could leave a row pointing at nothing.
+  // Rows first (versions cascade), then every version in S3. If the S3 purge fails we're left with
+  // orphan bytes (invisible to users). The reverse order could leave rows pointing at nothing.
   await prisma.file.delete({ where: { id: file.id } });
-  await deleteObject(file.objectKey).catch((e) =>
+  await purgeObject(file.objectKey).catch((e) =>
     console.error(`Orphaned object ${file.objectKey}: delete failed`, e),
   );
   res.status(204).end();
@@ -129,7 +138,8 @@ filesRouter.get("/:id/download-url", async (req, res) => {
   const file = await findOwnedFile(req.userId!, req.params);
   const ttl = config.PRESIGN_TTL_SECONDS;
   res.json({
-    url: await presignDownload(file.objectKey, file.originalName, file.mimeType, ttl),
+    // Pinned to the current version id, so a concurrent new upload can't change what's downloaded.
+    url: await presignDownload(file.objectKey, file.originalName, file.mimeType, ttl, file.versionId ?? undefined),
     expiresAt: new Date(Date.now() + ttl * 1000).toISOString(),
   });
 });
@@ -139,7 +149,7 @@ filesRouter.get("/:id/download", async (req, res) => {
 
   let object;
   try {
-    object = await getObject(file.objectKey);
+    object = await getObject(file.objectKey, file.versionId ?? undefined);
   } catch (err) {
     if ((err as Error).name === "NoSuchKey") {
       // A row with no object behind it: a data-consistency bug on OUR side, so 500, not 404.
@@ -160,4 +170,125 @@ filesRouter.get("/:id/download", async (req, res) => {
   // Stream MinIO → client chunk by chunk. pipeline() also cleans up both sides if the client
   // disconnects mid-download.
   await pipeline(object.body, res);
+});
+
+// ---------- Versions (Phase 6) ----------
+
+const versionParam = z.object({ versionId: z.string().min(1).max(1024) });
+
+function versionData(v: { versionId: string | null; size: number | bigint; etag: string; mimeType: string }) {
+  return { versionId: v.versionId ?? "null", size: BigInt(v.size), etag: v.etag, mimeType: v.mimeType };
+}
+
+function toVersionDto(v: FileVersion, current: File) {
+  return {
+    versionId: v.versionId,
+    size: Number(v.size),
+    mimeType: v.mimeType,
+    etag: v.etag,
+    createdAt: v.createdAt,
+    isCurrent: v.versionId === (current.versionId ?? "null"),
+  };
+}
+
+async function findVersion(file: File, params: unknown): Promise<FileVersion> {
+  const parsed = versionParam.safeParse(params);
+  const version = parsed.success
+    ? await prisma.fileVersion.findUnique({
+        where: { fileId_versionId: { fileId: file.id, versionId: parsed.data.versionId } },
+      })
+    : null;
+  if (!version) throw new HttpError(404, "Version not found");
+  return version;
+}
+
+/**
+ * Record `v` as the file's new current version, then trim history to MAX_VERSIONS.
+ * If the database write fails, the S3 version we just created is deleted so nothing is orphaned.
+ */
+async function makeCurrent(file: File, v: Parameters<typeof versionData>[0]) {
+  const data = versionData(v);
+  let updated: File;
+  try {
+    [, updated] = await prisma.$transaction([
+      prisma.fileVersion.create({ data: { ...data, fileId: file.id } }),
+      prisma.file.update({
+        where: { id: file.id },
+        data: { size: data.size, etag: data.etag, mimeType: data.mimeType, versionId: v.versionId },
+      }),
+    ]);
+  } catch (err) {
+    await deleteObject(file.objectKey, v.versionId ?? undefined).catch(() => {});
+    throw err;
+  }
+
+  // Oldest versions beyond the limit go: rows first, then bytes (same order as file delete).
+  const excess = await prisma.fileVersion.findMany({
+    where: { fileId: file.id },
+    orderBy: { createdAt: "desc" },
+    skip: config.MAX_VERSIONS,
+  });
+  if (excess.length) {
+    await prisma.fileVersion.deleteMany({ where: { id: { in: excess.map((e) => e.id) } } });
+    for (const e of excess) {
+      await deleteObject(file.objectKey, e.versionId).catch((err) =>
+        console.error(`Orphaned version ${file.objectKey}@${e.versionId}`, err),
+      );
+    }
+  }
+  return updated;
+}
+
+filesRouter.get("/:id/versions", async (req, res) => {
+  const file = await findOwnedFile(req.userId!, req.params);
+  const versions = await prisma.fileVersion.findMany({
+    where: { fileId: file.id },
+    orderBy: { createdAt: "desc" },
+  });
+  res.json(versions.map((v) => toVersionDto(v, file)));
+});
+
+// Upload new content for an existing file. The name stays; the bytes become a new S3 version.
+filesRouter.post("/:id/versions", async (req, res) => {
+  const file = await findOwnedFile(req.userId!, req.params);
+  const { limit, tooLarge } = await uploadLimit(req.userId!);
+  const up = await receiveUpload(req, file.objectKey, limit, tooLarge);
+  res.status(201).json(toDto(await makeCurrent(file, up)));
+});
+
+// Restore = copy the old version on top of the key. History is never rewritten, only appended to.
+filesRouter.post("/:id/versions/:versionId/restore", async (req, res) => {
+  const file = await findOwnedFile(req.userId!, req.params);
+  const version = await findVersion(file, req.params);
+  if (version.versionId === file.versionId) throw new HttpError(409, "That is already the current version");
+  const { limit } = await uploadLimit(req.userId!);
+  if (Number(version.size) > limit) throw new HttpError(403, "Storage quota exceeded");
+
+  const copy = await copyVersion(file.objectKey, version.versionId);
+  const updated = await makeCurrent(file, { ...copy, size: version.size, mimeType: version.mimeType });
+  res.json(toDto(updated));
+});
+
+filesRouter.get("/:id/versions/:versionId/download-url", async (req, res) => {
+  const file = await findOwnedFile(req.userId!, req.params);
+  const version = await findVersion(file, req.params);
+  const ttl = config.PRESIGN_TTL_SECONDS;
+  res.json({
+    url: await presignDownload(file.objectKey, file.originalName, version.mimeType, ttl, version.versionId),
+    expiresAt: new Date(Date.now() + ttl * 1000).toISOString(),
+  });
+});
+
+// Delete one old version to free space. The current version can't be deleted this way.
+filesRouter.delete("/:id/versions/:versionId", async (req, res) => {
+  const file = await findOwnedFile(req.userId!, req.params);
+  const version = await findVersion(file, req.params);
+  if (version.versionId === file.versionId) {
+    throw new HttpError(409, "Can't delete the current version; delete the file instead");
+  }
+  await prisma.fileVersion.delete({ where: { id: version.id } });
+  await deleteObject(file.objectKey, version.versionId).catch((e) =>
+    console.error(`Orphaned version ${file.objectKey}@${version.versionId}`, e),
+  );
+  res.status(204).end();
 });

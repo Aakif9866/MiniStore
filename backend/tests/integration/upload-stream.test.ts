@@ -5,7 +5,7 @@ import { ListMultipartUploadsCommand } from "@aws-sdk/client-s3";
 import express from "express";
 import request from "supertest";
 import { errorHandler, HttpError } from "../../src/errors";
-import { bucket, deleteObject, getObject, s3 } from "../../src/storage";
+import { bucket, getObject, purgeObject, s3 } from "../../src/storage";
 import { receiveUpload } from "../../src/upload-stream";
 
 // A bare app around receiveUpload, so each test can choose its own size limit.
@@ -48,7 +48,7 @@ describe("streaming uploads (Phase 5)", () => {
     expect(res.body.size).toBe(content.length);
     expect(res.body.etag).toMatch(/-3$/); // multipart ETags end in -<part count>
     expect(sha(await readObject(lastKey))).toBe(sha(content));
-    await deleteObject(lastKey);
+    await purgeObject(lastKey);
   });
 
   it("stops at the limit mid-stream: 413, no object, no leftover parts", async () => {

@@ -42,7 +42,7 @@ describe("upload → list → get → download → delete", () => {
   it("round-trips the exact bytes and keeps Postgres and MinIO in step", async () => {
     const content = randomBytes(256 * 1024);
     const up = await upload(alice, content, "photo.jpg").expect(201);
-    expect(up.body).toMatchObject({ name: "photo.jpg", size: content.length, versionId: null });
+    expect(up.body).toMatchObject({ name: "photo.jpg", size: content.length, versionId: expect.any(String) });
     expect(up.body).not.toHaveProperty("objectKey"); // internal detail stays internal
 
     // Metadata is in Postgres and the bytes are in MinIO under a key we generated.

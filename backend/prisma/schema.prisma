@@ -31,11 +31,29 @@ model File {
   mimeType     String   @map("mime_type")
   size         BigInt // bytes. BigInt because Int (32-bit) caps at 2 GiB
   etag         String
-  versionId    String?  @map("version_id") // null until bucket versioning (Phase 6)
+  versionId    String?  @map("version_id") // S3 version id of the CURRENT content
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
+  versions     FileVersion[]
 
   // "List my files, newest first" is the hottest query — one index serves it.
   @@index([userId, createdAt])
   @@map("files")
+}
+
+// Every stored version of a file's bytes (Phase 6). Postgres, not S3 listing, is the source of
+// truth: it answers "what does this user store?" with one indexed query, and quota counts it.
+model FileVersion {
+  id        String   @id @default(uuid()) @db.Uuid
+  fileId    String   @map("file_id") @db.Uuid
+  file      File     @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  versionId String   @map("version_id") // S3 version id; "null" for objects written before versioning
+  size      BigInt
+  etag      String
+  mimeType  String   @map("mime_type")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([fileId, versionId])
+  @@index([fileId, createdAt])
+  @@map("file_versions")
 }

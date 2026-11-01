@@ -8,6 +8,10 @@ mc ready local
 # 1. The bucket. Private by default — no anonymous access.
 mc mb --ignore-existing "local/$MINIO_BUCKET"
 
+# 1b. Versioning (Phase 6): every overwrite keeps the previous bytes as a "noncurrent" version,
+#     and a plain DELETE only adds a delete marker. Once enabled it can be suspended, never removed.
+mc version enable "local/$MINIO_BUCKET"
+
 # 2. An IAM policy that only allows what the backend needs, only on this bucket.
 #    ARN format: arn:aws:s3:::<bucket> is the bucket itself, <bucket>/* is every object in it.
 cat > /tmp/ministore-app.json <<EOF
@@ -16,12 +20,14 @@ cat > /tmp/ministore-app.json <<EOF
   "Statement": [
     {
       "Effect": "Allow",
-      "Action": ["s3:GetBucketLocation", "s3:ListBucket", "s3:ListBucketMultipartUploads"],
+      "Action": ["s3:GetBucketLocation", "s3:ListBucket", "s3:ListBucketMultipartUploads",
+                 "s3:ListBucketVersions"],
       "Resource": ["arn:aws:s3:::$MINIO_BUCKET"]
     },
     {
       "Effect": "Allow",
       "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject",
+                 "s3:GetObjectVersion", "s3:DeleteObjectVersion",
                  "s3:AbortMultipartUpload", "s3:ListMultipartUploadParts"],
       "Resource": ["arn:aws:s3:::$MINIO_BUCKET/*"]
     }
