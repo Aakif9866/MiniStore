@@ -87,14 +87,12 @@ export const api = {
     });
   },
 
-  // ponytail: streams through the backend into a Blob (whole file in browser memory).
-  // Phase 4 swaps this for a presigned MinIO URL the browser downloads directly.
+  /**
+   * Ask the API for a short-lived presigned URL, then let the browser fetch it from MinIO directly.
+   * MinIO answers with Content-Disposition: attachment, so the page stays put and a download starts.
+   */
   async download(file: FileDto) {
-    const res = await fetch(`${BASE}/files/${file.id}/download`, { headers: authHeader() });
-    if (!res.ok) await fail(res);
-    const url = URL.createObjectURL(await res.blob());
-    const a = Object.assign(document.createElement("a"), { href: url, download: file.name });
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000); // give the browser time to start the save
+    const { url } = await request<{ url: string }>(`/files/${file.id}/download-url`);
+    window.location.assign(url);
   },
 };

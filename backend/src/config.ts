@@ -11,6 +11,10 @@ const schema = z.object({
 
   S3_ENDPOINT: z.url(),
   S3_REGION: z.string().default("us-east-1"),
+  // Host the BROWSER uses to reach MinIO. Presigned URLs embed (and sign) this host, so it must be
+  // reachable by clients — it differs from S3_ENDPOINT when the backend runs inside Docker.
+  S3_PUBLIC_ENDPOINT: z.url().optional(),
+  PRESIGN_TTL_SECONDS: z.coerce.number().int().min(1).max(3600).default(300),
   MINIO_BUCKET: z.string().min(3),
   MINIO_APP_ACCESS_KEY: z.string().min(3),
   MINIO_APP_SECRET_KEY: z.string().min(8),

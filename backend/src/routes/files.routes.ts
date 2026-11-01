@@ -8,7 +8,7 @@ import { config } from "../config";
 import { prisma } from "../db";
 import { HttpError } from "../errors";
 import type { File } from "../generated/prisma/client";
-import { bucket, deleteObject, getObject, putObject } from "../storage";
+import { bucket, deleteObject, getObject, presignDownload, putObject } from "../storage";
 import { checkUpload, sanitizeFilename, SNIFF_BYTES } from "../upload-policy";
 
 export const filesRouter = Router();
@@ -132,6 +132,17 @@ filesRouter.delete("/:id", async (req, res) => {
     console.error(`Orphaned object ${file.objectKey}: delete failed`, e),
   );
   res.status(204).end();
+});
+
+// Preferred download path: the browser fetches bytes straight from MinIO, so large downloads cost
+// the API one small JSON response instead of streaming every byte through Node.
+filesRouter.get("/:id/download-url", async (req, res) => {
+  const file = await findOwnedFile(req.userId!, req.params);
+  const ttl = config.PRESIGN_TTL_SECONDS;
+  res.json({
+    url: await presignDownload(file.objectKey, file.originalName, file.mimeType, ttl),
+    expiresAt: new Date(Date.now() + ttl * 1000).toISOString(),
+  });
 });
 
 filesRouter.get("/:id/download", async (req, res) => {
