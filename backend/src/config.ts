@@ -28,6 +28,10 @@ const schema = z.object({
   MAX_USER_STORAGE_BYTES: z.coerce.number().int().positive().default(1024 ** 3),
   // Versions kept per file (Phase 6); the oldest are deleted beyond this.
   MAX_VERSIONS: z.coerce.number().int().min(1).max(100).default(10),
+  // Lifecycle (Phase 7)
+  TRASH_RETENTION_DAYS: z.coerce.number().int().min(1).default(30),
+  LIFECYCLE_INTERVAL_MINUTES: z.coerce.number().int().min(0).default(60), // 0 = don't run in the API process
+  ORPHAN_GRACE_MINUTES: z.coerce.number().int().min(0).default(60),
   // Requests per IP to /auth/* in a 15-minute window. Slows password guessing.
   AUTH_RATE_LIMIT: z.coerce.number().int().positive().default(20),
 });

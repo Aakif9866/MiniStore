@@ -13,6 +13,8 @@ export type FileDto = {
   updatedAt: string;
 };
 
+export type TrashedFileDto = FileDto & { deletedAt: string; purgeAt: string };
+
 export type VersionDto = {
   versionId: string;
   size: number;
@@ -76,7 +78,13 @@ export const api = {
 
   usage: () => request<{ usedBytes: number; quotaBytes: number; fileCount: number }>("/files/usage"),
 
+  /** Moves the file to the trash; it can be restored until it's purged. */
   deleteFile: (id: string) => request<void>(`/files/${id}`, { method: "DELETE" }),
+
+  trash: () => request<TrashedFileDto[]>("/files/trash"),
+  restoreFromTrash: (id: string) => request<FileDto>(`/files/trash/${id}/restore`, { method: "POST" }),
+  deleteForever: (id: string) => request<void>(`/files/trash/${id}`, { method: "DELETE" }),
+  emptyTrash: () => request<void>("/files/trash", { method: "DELETE" }),
 
   upload: (file: File, onProgress: (fraction: number) => void) => sendFile("/files/upload", file, onProgress),
 

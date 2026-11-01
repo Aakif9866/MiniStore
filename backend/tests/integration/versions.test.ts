@@ -104,7 +104,8 @@ describe("versioning (Phase 6)", () => {
     await newVersion(id, "b").expect(201);
     const { objectKey } = await prisma.file.findUniqueOrThrow({ where: { id } });
 
-    await request(app).delete(`/files/${id}`).set(as(alice)).expect(204);
+    await request(app).delete(`/files/${id}`).set(as(alice)).expect(204); // to trash
+    await request(app).delete(`/files/trash/${id}`).set(as(alice)).expect(204); // permanently
     expect(await listS3(objectKey)).toEqual({ versions: 0, markers: 0 });
     expect(await prisma.fileVersion.count()).toBe(0);
   });

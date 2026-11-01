@@ -34,10 +34,12 @@ model File {
   versionId    String?  @map("version_id") // S3 version id of the CURRENT content
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
+  deletedAt    DateTime? @map("deleted_at") // set = in the trash (Phase 7); purged after the retention period
   versions     FileVersion[]
 
   // "List my files, newest first" is the hottest query — one index serves it.
   @@index([userId, createdAt])
+  @@index([deletedAt]) // the purge job scans for old trash
   @@map("files")
 }
 

@@ -126,8 +126,8 @@ docker compose down      # data survives in Docker volumes; add -v to wipe it
 | 4 | [Presigned URLs](docs/04-presigned-urls.md) (browser ↔ MinIO directly) | ✅ done |
 | 5 | [Large files](docs/05-large-files.md) (streaming, multipart upload) | ✅ done |
 | 6 | [Versioning](docs/06-versioning.md) (history, restore, pruning) | ✅ done |
-| 7 | Lifecycle rules (expiry, retention) | next |
-| 8 | Observability (Prometheus + Grafana) | |
+| 7 | [Lifecycle](docs/07-lifecycle.md) (trash, retention, orphan cleanup, ILM) | ✅ done |
+| 8 | Observability (Prometheus + Grafana) | next |
 | 9 | Load testing (k6) | |
 | 10 | Failure testing | |
 | 11 | Backup & disaster recovery | |

@@ -64,8 +64,11 @@ describe("upload → list → get → download → delete", () => {
     expect(Buffer.compare(dl.body, content)).toBe(0);
     expect(dl.headers["content-disposition"]).toBe("attachment; filename*=UTF-8''photo.jpg");
 
+    // Delete = move to trash: hidden at once, bytes kept until purged.
     await request(app).delete(`/files/${up.body.id}`).set("Authorization", `Bearer ${alice}`).expect(204);
     await request(app).get(`/files/${up.body.id}`).set("Authorization", `Bearer ${alice}`).expect(404);
+    expect(await objectExists(row.objectKey)).toBe(true);
+    await request(app).delete(`/files/trash/${up.body.id}`).set("Authorization", `Bearer ${alice}`).expect(204);
     expect(await objectExists(row.objectKey)).toBe(false);
   });
 

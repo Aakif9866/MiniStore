@@ -7,7 +7,8 @@ import { config } from "../config";
 import { prisma } from "../db";
 import { HttpError } from "../errors";
 import type { File, FileVersion } from "../generated/prisma/client";
-import { bucket, copyVersion, deleteObject, getObject, presignDownload, purgeObject } from "../storage";
+import { purgeFile, trimHistory } from "../file-service";
+import { bucket, copyVersion, deleteObject, getObject, presignDownload } from "../storage";
 import { receiveUpload } from "../upload-stream";
 
 export const filesRouter = Router();
@@ -15,11 +16,16 @@ filesRouter.use(requireAuth);
 
 const idParam = z.object({ id: z.uuid() });
 
-/** Find a file only if it belongs to the caller. Not-yours and doesn't-exist both give 404. */
-async function findOwnedFile(userId: string, params: unknown): Promise<File> {
+/**
+ * Find a file only if it belongs to the caller. Not-yours and doesn't-exist both give 404.
+ * Trashed files are invisible to every route except the /trash ones.
+ */
+async function findOwnedFile(userId: string, params: unknown, { trashed = false } = {}): Promise<File> {
   const parsed = idParam.safeParse(params);
   const file = parsed.success
-    ? await prisma.file.findFirst({ where: { id: parsed.data.id, userId } })
+    ? await prisma.file.findFirst({
+        where: { id: parsed.data.id, userId, deletedAt: trashed ? { not: null } : null },
+      })
     : null;
   if (!file) throw new HttpError(404, "File not found");
   return file;
@@ -39,6 +45,11 @@ function toDto(f: File) {
   };
 }
 
+function toTrashDto(f: File) {
+  const purgeAt = new Date(f.deletedAt!.getTime() + config.TRASH_RETENTION_DAYS * 86_400_000);
+  return { ...toDto(f), deletedAt: f.deletedAt, purgeAt };
+}
+
 /**
  * How many bytes this user may still upload, and which error to give when a stream crosses it.
  * The quota is enforced WHILE streaming: the limit for one upload is whatever is left.
@@ -55,7 +66,7 @@ async function uploadLimit(userId: string) {
   };
 }
 
-/** Quota counts every stored version, not just the current one: old versions use disk too. */
+/** Quota counts every stored version (trash included), not just current ones: they all use disk. */
 async function usedBytes(userId: string): Promise<number> {
   const { _sum } = await prisma.fileVersion.aggregate({ where: { file: { userId } }, _sum: { size: true } });
   return Number(_sum.size ?? 0);
@@ -103,32 +114,59 @@ filesRouter.get("/usage", async (req, res) => {
   res.json({
     usedBytes: await usedBytes(userId),
     quotaBytes: config.MAX_USER_STORAGE_BYTES,
-    fileCount: await prisma.file.count({ where: { userId } }),
+    fileCount: await prisma.file.count({ where: { userId, deletedAt: null } }),
   });
 });
 
 filesRouter.get("/", async (req, res) => {
   const files = await prisma.file.findMany({
-    where: { userId: req.userId! },
+    where: { userId: req.userId!, deletedAt: null },
     orderBy: { createdAt: "desc" },
     take: 100, // pagination comes later; never return an unbounded list
   });
   res.json(files.map(toDto));
 });
 
+// ---------- Trash (Phase 7) ----------
+// Registered before "/:id" routes so "trash" isn't parsed as a file id.
+
+filesRouter.get("/trash", async (req, res) => {
+  const files = await prisma.file.findMany({
+    where: { userId: req.userId!, deletedAt: { not: null } },
+    orderBy: { deletedAt: "desc" },
+    take: 100,
+  });
+  res.json(files.map(toTrashDto));
+});
+
+filesRouter.post("/trash/:id/restore", async (req, res) => {
+  const file = await findOwnedFile(req.userId!, req.params, { trashed: true });
+  res.json(toDto(await prisma.file.update({ where: { id: file.id }, data: { deletedAt: null } })));
+});
+
+filesRouter.delete("/trash/:id", async (req, res) => {
+  await purgeFile(await findOwnedFile(req.userId!, req.params, { trashed: true }));
+  res.status(204).end();
+});
+
+// Empty the trash.
+filesRouter.delete("/trash", async (req, res) => {
+  const files = await prisma.file.findMany({
+    where: { userId: req.userId!, deletedAt: { not: null } },
+    select: { id: true, objectKey: true },
+  });
+  for (const f of files) await purgeFile(f);
+  res.status(204).end();
+});
+
 filesRouter.get("/:id", async (req, res) => {
   res.json(toDto(await findOwnedFile(req.userId!, req.params)));
 });
 
+// "Delete" moves to the trash: reversible until TRASH_RETENTION_DAYS, then purged by the lifecycle job.
 filesRouter.delete("/:id", async (req, res) => {
   const file = await findOwnedFile(req.userId!, req.params);
-
-  // Rows first (versions cascade), then every version in S3. If the S3 purge fails we're left with
-  // orphan bytes (invisible to users). The reverse order could leave rows pointing at nothing.
-  await prisma.file.delete({ where: { id: file.id } });
-  await purgeObject(file.objectKey).catch((e) =>
-    console.error(`Orphaned object ${file.objectKey}: delete failed`, e),
-  );
+  await prisma.file.update({ where: { id: file.id }, data: { deletedAt: new Date() } });
   res.status(204).end();
 });
 
@@ -222,20 +260,7 @@ async function makeCurrent(file: File, v: Parameters<typeof versionData>[0]) {
     throw err;
   }
 
-  // Oldest versions beyond the limit go: rows first, then bytes (same order as file delete).
-  const excess = await prisma.fileVersion.findMany({
-    where: { fileId: file.id },
-    orderBy: { createdAt: "desc" },
-    skip: config.MAX_VERSIONS,
-  });
-  if (excess.length) {
-    await prisma.fileVersion.deleteMany({ where: { id: { in: excess.map((e) => e.id) } } });
-    for (const e of excess) {
-      await deleteObject(file.objectKey, e.versionId).catch((err) =>
-        console.error(`Orphaned version ${file.objectKey}@${e.versionId}`, err),
-      );
-    }
-  }
+  await trimHistory(file);
   return updated;
 }
 

@@ -18,6 +18,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, setToken, type FileDto } from "./api";
 import { Logo } from "./App";
 import { formatSize, timeAgo } from "./format";
+import { Trash } from "./Trash";
 import { Versions } from "./Versions";
 
 type Upload = { key: string; name: string; progress: number };
@@ -39,6 +40,7 @@ export function Files() {
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
   const [dragging, setDragging] = useState(false);
+  const [view, setView] = useState<"files" | "trash">("files");
   const [historyOf, setHistoryOf] = useState<FileDto | null>(null);
   const [usage, setUsage] = useState<{ usedBytes: number; quotaBytes: number } | null>(null);
   const picker = useRef<HTMLInputElement>(null);
@@ -63,8 +65,8 @@ export function Files() {
     }
   }
 
+  // No confirm dialog: it goes to the trash and can be restored.
   async function remove(file: FileDto) {
-    if (!confirm(`Delete "${file.name}"? This can't be undone.`)) return;
     try {
       await api.deleteFile(file.id);
       setFiles((f) => f!.filter((x) => x.id !== file.id));
@@ -90,7 +92,7 @@ export function Files() {
 
       <section className="mt-8 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <h1 className="text-3xl font-bold lg:text-5xl">Your files</h1>
+          <h1 className="text-3xl font-bold lg:text-5xl">{view === "files" ? "Your files" : "Trash"}</h1>
           <p className="mt-2 flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
             <HardDrive size={16} className="text-teal-500" />
             {usage ? `${formatSize(usage.usedBytes)} of ${formatSize(usage.quotaBytes)} used` : "Loading…"}
@@ -119,6 +121,26 @@ export function Files() {
         </label>
       </section>
 
+      <nav className="mt-6 flex gap-6 border-b border-gray-200 dark:border-white/10" aria-label="Views">
+        {(["files", "trash"] as const).map((v) => (
+          <button
+            key={v}
+            onClick={() => setView(v)}
+            aria-current={view === v ? "page" : undefined}
+            className={`relative pb-2 text-sm font-medium capitalize transition-colors duration-150 ${
+              view === v ? "text-gray-900 dark:text-white" : "text-gray-500 hover:text-gray-800 dark:hover:text-gray-200"
+            }`}
+          >
+            {v === "files" ? "My files" : "Trash"}
+            {view === v && <span className="brand-gradient absolute inset-x-0 -bottom-px h-0.5 rounded-full" />}
+          </button>
+        ))}
+      </nav>
+
+      {view === "trash" ? (
+        <Trash onChanged={refresh} report={report} />
+      ) : (
+      <>
       <button
         onClick={() => picker.current?.click()}
         onDragOver={(e) => {
@@ -216,7 +238,8 @@ export function Files() {
                 </button>
                 <button
                   onClick={() => remove(f)}
-                  aria-label={`Delete ${f.name}`}
+                  aria-label={`Move ${f.name} to trash`}
+                  title="Move to trash"
                   className="rounded-lg border border-gray-200 px-3 text-gray-500 transition-colors duration-150 hover:border-red-500 hover:bg-red-500 hover:text-white active:scale-95 dark:border-white/10"
                 >
                   <Trash2 size={15} />
@@ -226,6 +249,8 @@ export function Files() {
           );
         })}
       </ul>
+      </>
+      )}
 
       {historyOf && (
         <Versions

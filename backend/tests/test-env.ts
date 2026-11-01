@@ -9,5 +9,8 @@ export function loadTestEnv(): string {
   if (!url || !new URL(url).pathname.endsWith("_test")) {
     throw new Error("TEST_DATABASE_URL must be set and name a database ending in _test");
   }
+  // Same idea for MinIO: the lifecycle tests delete objects the test DB doesn't know about.
+  // Idempotent: every test file calls this in the same process (--runInBand).
+  if (!process.env.MINIO_BUCKET?.endsWith("-test")) process.env.MINIO_BUCKET += "-test";
   return url;
 }
