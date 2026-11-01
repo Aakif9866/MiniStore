@@ -2,6 +2,7 @@ import { ListObjectVersionsCommand } from "@aws-sdk/client-s3";
 import { config } from "./config";
 import { prisma } from "./db";
 import { purgeFile, trimHistory } from "./file-service";
+import { lifecycleCounter, logger } from "./observability";
 import { bucket, deleteObject, s3 } from "./storage";
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -60,7 +61,7 @@ export async function reconcile({ dryRun = false, graceMs = config.ORPHAN_GRACE_
 
   if (!dryRun) for (const o of orphans) await deleteObject(o.key, o.versionId);
   const dangling = [...known].filter((id) => !seen.has(id));
-  for (const d of dangling) console.error(`Dangling row: no bytes in MinIO for ${d}`);
+  for (const d of dangling) logger.error(`Dangling row: no bytes in MinIO for ${d}`);
   return { orphans: orphans.length, dangling: dangling.length };
 }
 
@@ -73,10 +74,16 @@ export async function runLifecycle({ dryRun = false } = {}) {
     ["reconcile", () => reconcile({ dryRun })],
   ];
   for (const [name, task] of tasks) {
-    summary[name] = await task().catch((err) => {
-      console.error(`Lifecycle task ${name} failed`, err);
+    summary[name] = await task().catch((err: unknown) => {
+      logger.error({ err }, `Lifecycle task ${name} failed`);
       return "failed";
     });
   }
+  // Feed the counters, so a Grafana panel (and an alert) can show what the job did over time.
+  if (typeof summary.trashPurged === "number") lifecycleCounter.inc({ task: "trash_purged" }, summary.trashPurged);
+  if (typeof summary.versionsPruned === "number") lifecycleCounter.inc({ task: "versions_pruned" }, summary.versionsPruned);
+  const rec = summary.reconcile as { orphans?: number; dangling?: number };
+  if (!dryRun && rec?.orphans) lifecycleCounter.inc({ task: "orphans_deleted" }, rec.orphans);
+  if (rec?.dangling) lifecycleCounter.inc({ task: "dangling_found" }, rec.dangling);
   return summary;
 }

@@ -127,8 +127,8 @@ docker compose down      # data survives in Docker volumes; add -v to wipe it
 | 5 | [Large files](docs/05-large-files.md) (streaming, multipart upload) | ✅ done |
 | 6 | [Versioning](docs/06-versioning.md) (history, restore, pruning) | ✅ done |
 | 7 | [Lifecycle](docs/07-lifecycle.md) (trash, retention, orphan cleanup, ILM) | ✅ done |
-| 8 | Observability (Prometheus + Grafana) | next |
-| 9 | Load testing (k6) | |
+| 8 | [Observability](docs/08-observability.md) (logs, RED metrics, Grafana, alerts) | ✅ done |
+| 9 | Load testing (k6) | next |
 | 10 | Failure testing | |
 | 11 | Backup & disaster recovery | |
 | 12 | High availability (distributed MinIO) | |

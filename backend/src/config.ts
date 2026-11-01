@@ -28,6 +28,9 @@ const schema = z.object({
   MAX_USER_STORAGE_BYTES: z.coerce.number().int().positive().default(1024 ** 3),
   // Versions kept per file (Phase 6); the oldest are deleted beyond this.
   MAX_VERSIONS: z.coerce.number().int().min(1).max(100).default(10),
+  // Observability (Phase 8). Docker's Prometheus reaches the host via host.docker.internal.
+  METRICS_PORT: z.coerce.number().int().default(9464),
+  METRICS_HOST: z.string().default("127.0.0.1"),
   // Lifecycle (Phase 7)
   TRASH_RETENTION_DAYS: z.coerce.number().int().min(1).default(30),
   LIFECYCLE_INTERVAL_MINUTES: z.coerce.number().int().min(0).default(60), // 0 = don't run in the API process

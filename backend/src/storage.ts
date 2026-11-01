@@ -10,6 +10,7 @@ import {
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { config } from "./config";
+import { s3Duration } from "./observability";
 
 // The standard AWS SDK. Nothing here is MinIO-specific except the endpoint, so switching to
 // AWS S3 (or another S3-compatible store) is a config change.
@@ -24,6 +25,22 @@ const clientOptions = {
   },
 };
 export const s3 = new S3Client({ ...clientOptions, endpoint: config.S3_ENDPOINT });
+
+// Time every S3 call (PutObject, UploadPart, GetObject, …) in one place: SDK middleware wraps them all.
+s3.middlewareStack.add(
+  (next, context) => async (args) => {
+    const stop = s3Duration.startTimer({ operation: context.commandName });
+    try {
+      const out = await next(args);
+      stop({ outcome: "ok" });
+      return out;
+    } catch (err) {
+      stop({ outcome: "error" });
+      throw err;
+    }
+  },
+  { step: "initialize", name: "ministoreMetrics" },
+);
 // Signing is local maths (no network call), but the signature covers the host, so presigned URLs
 // must be made with the endpoint the browser will use.
 const presigner = new S3Client({

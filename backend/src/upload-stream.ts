@@ -3,6 +3,7 @@ import { Upload } from "@aws-sdk/lib-storage";
 import busboy from "busboy";
 import type { Request } from "express";
 import { HttpError } from "./errors";
+import { uploadedBytes } from "./observability";
 import { bucket, deleteObject, s3 } from "./storage";
 import { checkUpload, sanitizeFilename, SNIFF_BYTES } from "./upload-policy";
 
@@ -107,6 +108,7 @@ export function receiveUpload(req: Request, key: string, maxBytes: number, tooLa
       await deleteObject(key, out.VersionId).catch(() => {});
       throw tooLarge;
     }
+    uploadedBytes.inc(size);
     return {
       name,
       mimeType,

@@ -1,0 +1,19 @@
+# Prometheus pulls ("scrapes") metrics from each target every 15 s and stores them as time series.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s # how often alert rules are checked
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  # The API runs on the host (npm run dev); its metrics port is 9464 on the host's localhost.
+  - job_name: ministore-api
+    static_configs:
+      - targets: ["host.docker.internal:9464"]
+
+  # MinIO's own metrics: capacity, per-bucket usage, request counts, drive health.
+  - job_name: minio
+    metrics_path: /minio/v2/metrics/cluster
+    static_configs:
+      - targets: ["minio:9000"]

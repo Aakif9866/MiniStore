@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { logger } from "../observability";
 import { pipeline } from "node:stream/promises";
 import { Router } from "express";
 import { z } from "zod";
@@ -102,7 +103,7 @@ filesRouter.post("/upload", async (req, res) => {
     res.status(201).json(toDto(file));
   } catch (err) {
     await deleteObject(objectKey, up.versionId ?? undefined).catch((e) =>
-      console.error(`Orphaned object ${objectKey}: cleanup failed`, e),
+      logger.error({ err: e }, `Orphaned object ${objectKey}: cleanup failed`),
     );
     throw err;
   }
@@ -191,7 +192,7 @@ filesRouter.get("/:id/download", async (req, res) => {
   } catch (err) {
     if ((err as Error).name === "NoSuchKey") {
       // A row with no object behind it: a data-consistency bug on OUR side, so 500, not 404.
-      console.error(`Dangling row: file ${file.id} has no object ${file.objectKey}`);
+      logger.error(`Dangling row: file ${file.id} has no object ${file.objectKey}`);
       throw new HttpError(500, "File content is missing");
     }
     throw err;
@@ -313,7 +314,7 @@ filesRouter.delete("/:id/versions/:versionId", async (req, res) => {
   }
   await prisma.fileVersion.delete({ where: { id: version.id } });
   await deleteObject(file.objectKey, version.versionId).catch((e) =>
-    console.error(`Orphaned version ${file.objectKey}@${version.versionId}`, e),
+    logger.error({ err: e }, `Orphaned version ${file.objectKey}@${version.versionId}`),
   );
   res.status(204).end();
 });

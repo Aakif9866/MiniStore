@@ -1,5 +1,6 @@
 import type { ErrorRequestHandler } from "express";
 import { ZodError, z } from "zod";
+import { logger } from "./observability";
 
 /** An error that is safe to show the client, with the HTTP status to use. */
 export class HttpError extends Error {
@@ -32,6 +33,6 @@ export const errorHandler: ErrorRequestHandler = (err, _req, res, _next) => {
 
   // Anything else is a bug or an infrastructure failure. Log the details, hide them from the
   // client (stack traces leak internals).
-  console.error(err);
+  logger.error({ err }, "unhandled error");
   res.status(500).json({ error: "Internal server error" });
 };

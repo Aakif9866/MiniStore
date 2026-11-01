@@ -1,0 +1,44 @@
+# Alert rules. No Alertmanager locally (it would send email/Slack); firing alerts are visible at
+# http://127.0.0.1:9090/alerts. Each rule says WHAT is wrong from the user's point of view.
+groups:
+  - name: ministore
+    rules:
+      - alert: ApiDown
+        expr: up{job="ministore-api"} == 0
+        for: 1m
+        annotations:
+          summary: "The API's metrics endpoint is unreachable — the API is probably down."
+
+      - alert: MinioDown
+        expr: up{job="minio"} == 0
+        for: 1m
+        annotations:
+          summary: "MinIO is unreachable — uploads and downloads will fail."
+
+      - alert: HighErrorRate
+        expr: |
+          sum(rate(http_request_duration_seconds_count{status_code=~"5.."}[5m]))
+            / sum(rate(http_request_duration_seconds_count[5m])) > 0.05
+        for: 5m
+        annotations:
+          summary: "More than 5% of requests are failing with a server error."
+
+      - alert: SlowRequests
+        # Uploads are excluded: their duration depends on file size, not on our health.
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(http_request_duration_seconds_bucket{route!~".*(upload|versions)"}[5m]))) > 1
+        for: 10m
+        annotations:
+          summary: "p95 latency of non-upload requests is above 1 s."
+
+      - alert: S3Errors
+        expr: sum(rate(ministore_s3_request_duration_seconds_count{outcome="error"}[5m])) > 0.1
+        for: 5m
+        annotations:
+          summary: "S3 calls to MinIO are failing."
+
+      - alert: DanglingRows
+        expr: increase(ministore_lifecycle_items_total{task="dangling_found"}[2h]) > 0
+        annotations:
+          summary: "Postgres has files whose bytes are missing in MinIO (possible data loss). Check backups."
