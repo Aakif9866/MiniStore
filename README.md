@@ -174,6 +174,15 @@ What happened this session, in order:
 **Before running anything again:** free disk space. Docker's disk image grows and doesn't shrink on its
 own (`docker system df` shows what's using it).
 
+### Update — 2026-11-02
+
+- Only **2 GB** free on disk, and Docker Desktop had hung (`docker info` never returned).
+- Cleared the user caches (`~/.npm`, `~/Library/Caches`). Free disk went up to **4.7 GB**, still below
+  the 5 GB the upload test needs.
+- **Next step:** restart Docker Desktop, then run `docker system prune` and `docker builder prune` to
+  get above 5 GB free. After that, finish the Phase 9 checklist (re-run upload + mixed, add a low-disk
+  alert, decide on per-email login rate limiting).
+
 ## Suggested order to understand the code
 
 1. [docs/00-overview.md](docs/00-overview.md) — the big picture and the "two stores" problem.
